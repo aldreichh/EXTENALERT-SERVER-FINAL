@@ -40,25 +40,27 @@ const connectToDatabase = () => {
 
     // Create tables if they don't exist
     const createWhitelistedReportsTable = `
-      CREATE TABLE IF NOT EXISTS whitelisted_reports (
+      CREATE TABLE IF NOT EXISTS whitelisted_urls (
         id INT AUTO_INCREMENT PRIMARY KEY,
         url VARCHAR(255),
-        status VARCHAR(30)
+        status VARCHAR(30),
+        threat_level VARCHAR(30)
       );
     `;
     db.query(createWhitelistedReportsTable, (err, result) => {
       if (err) {
-        console.error('Error creating whitelisted_reports table:', err);
+        console.error('Error creating whitelisted_urls table:', err);
         return;
       }
-      console.log('whitelisted_reports table created or already exists:', result);
+      console.log('whitelisted_urls table created or already exists:', result);
     });
 
     const createBlacklistedUrlsTable = `
       CREATE TABLE IF NOT EXISTS blacklisted_urls (
         id INT AUTO_INCREMENT PRIMARY KEY,
         url VARCHAR(255),
-        status VARCHAR(30)
+        status VARCHAR(30),
+        threat_level VARCHAR(30)
       );
     `;
     db.query(createBlacklistedUrlsTable, (err, result) => {
@@ -73,7 +75,8 @@ const connectToDatabase = () => {
       CREATE TABLE IF NOT EXISTS incoming_reports (
         id INT AUTO_INCREMENT PRIMARY KEY,
         url VARCHAR(255),
-        status VARCHAR(30)
+        status VARCHAR(30),
+        threat_level VARCHAR(30)
       );
     `;
     db.query(createIncomingReportsTable, (err, result) => {
@@ -82,6 +85,22 @@ const connectToDatabase = () => {
         return;
       }
       console.log('incoming_reports table created or already exists:', result);
+    });
+
+    const createIncomingVirusTotalReportsTable = `
+      CREATE TABLE IF NOT EXISTS virustotal_reports (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        url VARCHAR(255),
+        status VARCHAR(30),
+        threat_level VARCHAR(30)
+      );
+    `;
+    db.query(createIncomingVirusTotalReportsTable, (err, result) => {
+      if (err) {
+        console.error('Error creating virustotal_reports table:', err);
+        return;
+      }
+      console.log('virustotal_reports table created or already exists:', result);
     });
 
     // Drop existing procedure if it exists
@@ -93,42 +112,55 @@ const connectToDatabase = () => {
 
       // Create stored procedure
       const createProcedure = `
-        CREATE PROCEDURE process_incoming_reports()
-        BEGIN
-          DECLARE done INT DEFAULT FALSE;
-          DECLARE report_url VARCHAR(255);
-          DECLARE report_status VARCHAR(30);
-          DECLARE cur CURSOR FOR 
-              SELECT url, status
-              FROM incoming_reports
-              GROUP BY url, status
-              HAVING COUNT(*) >= 10;
+      CREATE PROCEDURE process_incoming_reports()
+      BEGIN
+        DECLARE done INT DEFAULT FALSE;
+        DECLARE report_url VARCHAR(255);
+        DECLARE report_status VARCHAR(30);
+        DECLARE report_count INT;
+        DECLARE cur CURSOR FOR 
+            SELECT url, status, COUNT(*) as cnt
+            FROM incoming_reports
+            GROUP BY url, status
+            HAVING cnt >= 10;
 
-          DECLARE CONTINUE HANDLER FOR NOT FOUND SET done = TRUE;
+        DECLARE CONTINUE HANDLER FOR NOT FOUND SET done = TRUE;
 
-          OPEN cur;
+        OPEN cur;
 
-          read_loop: LOOP
-              FETCH cur INTO report_url, report_status;
-              IF done THEN
-                  LEAVE read_loop;
-              END IF;
+        read_loop: LOOP
+            FETCH cur INTO report_url, report_status, report_count;
+            IF done THEN
+                LEAVE read_loop;
+            END IF;
 
-              IF report_status = 'benign' THEN
-                  IF NOT EXISTS (SELECT 1 FROM whitelisted_reports WHERE url = report_url AND status = report_status) THEN
-                      INSERT INTO whitelisted_reports (url, status) VALUES (report_url, report_status);
-                  END IF;
-              ELSE
-                  IF NOT EXISTS (SELECT 1 FROM blacklisted_urls WHERE url = report_url AND status = report_status) THEN
-                      INSERT INTO blacklisted_urls (url, status) VALUES (report_url, report_status);
-                  END IF;
-              END IF;
+            IF report_status = 'benign' THEN
+                IF NOT EXISTS (SELECT 1 FROM whitelisted_urls WHERE url = report_url) THEN
+                    INSERT INTO whitelisted_urls (url, status, threat_level) VALUES (report_url, 'benign', 'Low');
+                ELSE
+                    UPDATE whitelisted_urls SET threat_level = 'Low' WHERE url = report_url;
+                END IF;
+                DELETE FROM incoming_reports WHERE url = report_url AND status = report_status;
+            ELSE -- phishing status
+                IF report_count >= 25 THEN
+                    IF EXISTS (SELECT 1 FROM blacklisted_urls WHERE url = report_url) THEN
+                        UPDATE blacklisted_urls SET threat_level = 'High' WHERE url = report_url;
+                    ELSE
+                        INSERT INTO blacklisted_urls (url, status, threat_level) VALUES (report_url, 'phishing', 'High');
+                    END IF;
+                    DELETE FROM incoming_reports WHERE url = report_url AND status = report_status;
+                ELSE -- count is between 10 and 24
+                    IF EXISTS (SELECT 1 FROM blacklisted_urls WHERE url = report_url) THEN
+                        UPDATE blacklisted_urls SET threat_level = 'Moderate' WHERE url = report_url;
+                    ELSE
+                        INSERT INTO blacklisted_urls (url, status, threat_level) VALUES (report_url, 'phishing', 'Moderate');
+                    END IF;
+                END IF;
+            END IF;
+        END LOOP;
 
-              DELETE FROM incoming_reports WHERE url = report_url AND status = report_status;
-          END LOOP;
-
-          CLOSE cur;
-        END;
+        CLOSE cur;
+      END ;
       `;
       db.query(createProcedure, (err, result) => {
         if (err) {
@@ -137,12 +169,88 @@ const connectToDatabase = () => {
         }
         console.log('Procedure created successfully');
       });
+      // Drop existing procedure if it exists
+      db.query('DROP PROCEDURE IF EXISTS process_virustotal_reports', (err, result) => {
+        if (err) {
+            console.error('Error dropping existing procedure:', err);
+            return;
+        }
+
+        // Create stored procedure
+        const createProcedure = `
+            CREATE PROCEDURE process_virustotal_reports()
+            BEGIN
+                DECLARE done INT DEFAULT FALSE;
+                DECLARE report_url VARCHAR(255);
+                DECLARE report_status VARCHAR(30);
+                DECLARE report_count INT;
+                DECLARE cur CURSOR FOR 
+                    SELECT url, status, COUNT(*) as cnt
+                    FROM virustotal_reports
+                    GROUP BY url, status
+                    HAVING cnt >= 10;
+
+                DECLARE CONTINUE HANDLER FOR NOT FOUND SET done = TRUE;
+
+                OPEN cur;
+
+                read_loop: LOOP
+                    FETCH cur INTO report_url, report_status, report_count;
+                    IF done THEN
+                        LEAVE read_loop;
+                    END IF;
+
+                    IF report_count >= 10 THEN
+                        IF report_status = 'benign' THEN
+                            IF NOT EXISTS (SELECT 1 FROM whitelisted_urls WHERE url = report_url) THEN
+                                INSERT INTO whitelisted_urls (url, status, threat_level) VALUES (report_url, 'benign', 'Low');
+                            ELSE
+                                UPDATE whitelisted_urls SET threat_level = 'Low' WHERE url = report_url;
+                            END IF;
+                            DELETE FROM virustotal_reports WHERE url = report_url AND status = report_status;
+                        ELSE -- phishing status
+                            IF NOT EXISTS (SELECT 1 FROM blacklisted_urls WHERE url = report_url) THEN
+                                INSERT INTO blacklisted_urls (url, status, threat_level) VALUES (report_url, 'phishing', 'Moderate');
+                            ELSE
+                                UPDATE blacklisted_urls SET threat_level = 'Moderate' WHERE url = report_url;
+                            END IF;
+                            DELETE FROM virustotal_reports WHERE url = report_url AND status = report_status;
+                        END IF;
+                    END IF;
+                END LOOP;
+
+                CLOSE cur;
+            END ;
+        `;
+        db.query(createProcedure, (err, result) => {
+            if (err) {
+                console.error('Error creating procedure:', err);
+                return;
+            }
+            console.log('Procedure created successfully');
+        });
+      });
+
+      // Create event if it doesn't exist
+      const createEvent = `
+        CREATE EVENT IF NOT EXISTS process_virustotal_reports_event
+        ON SCHEDULE EVERY 10 SECOND
+        DO
+        CALL process_virustotal_reports();
+      `;
+      db.query(createEvent, (err, result) => {
+        if (err) {
+            console.error('Error creating event:', err);
+            return;
+        }
+        console.log('Event created or already exists:', result);
+      });
     });
 
     // Create event if it doesn't exist
     const createEvent = `
       CREATE EVENT IF NOT EXISTS process_incoming_reports_event
-      ON SCHEDULE EVERY 1 MINUTE
+      ON SCHEDULE EVERY 10 SECOND
       DO
       CALL process_incoming_reports();
     `;
@@ -158,10 +266,10 @@ const connectToDatabase = () => {
 
 // POST endpoint to add data to incoming_reports
 app.post('/add-data', (req, res) => {
-  const { url, status } = req.body;
+  const { url, status, threat_level } = req.body;
 
-  const sql = 'INSERT INTO incoming_reports (url, status) VALUES (?, ?)';
-  db.query(sql, [url, status], (err, result) => {
+  const sql = 'INSERT INTO incoming_reports (url, status, threat_level) VALUES (?, ?, ?)';
+  db.query(sql, [url, status, threat_level], (err, result) => {
     if (err) {
       console.error('Error adding data to incoming_reports:', err);
       res.status(500).json({ error: 'Failed to add data to incoming_reports' });
@@ -172,11 +280,27 @@ app.post('/add-data', (req, res) => {
   });
 });
 
+// POST endpoint to add data to incoming_reports
+app.post('/add-data-virustotal', (req, res) => {
+  const { url, status, threat_level } = req.body;
+
+  const sql = 'INSERT INTO virustotal_reports (url, status, threat_level) VALUES (?, ?, ?)';
+  db.query(sql, [url, status, threat_level], (err, result) => {
+    if (err) {
+      console.error('Error adding data to virustotal_reports:', err);
+      res.status(500).json({ error: 'Failed to add data to virustotal_reports' });
+      return;
+    }
+    console.log('Data added to virustotal_reports:', result);
+    res.status(200).json({ message: 'Data added successfully to virustotal_reports' });
+  });
+});
+
 // Endpoint to check URL against whitelisted_reports
 app.get('/check-whitelist', (req, res) => {
   const { url } = req.query;
 
-  const query = 'SELECT * FROM whitelisted_reports WHERE url = ?';
+  const query = 'SELECT * FROM whitelisted_urls WHERE url = ?';
   db.query(query, [url], (err, results) => {
     if (err) {
       console.error('Error checking whitelist:', err);
