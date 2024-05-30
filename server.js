@@ -180,47 +180,48 @@ const connectToDatabase = () => {
         const createProcedure = `
             CREATE PROCEDURE process_virustotal_reports()
             BEGIN
-                DECLARE done INT DEFAULT FALSE;
-                DECLARE report_url VARCHAR(255);
-                DECLARE report_status VARCHAR(30);
-                DECLARE report_count INT;
-                DECLARE cur CURSOR FOR 
-                    SELECT url, status, COUNT(*) as cnt
-                    FROM virustotal_reports
-                    GROUP BY url, status
-                    HAVING cnt >= 10;
-
-                DECLARE CONTINUE HANDLER FOR NOT FOUND SET done = TRUE;
-
-                OPEN cur;
-
-                read_loop: LOOP
-                    FETCH cur INTO report_url, report_status, report_count;
-                    IF done THEN
-                        LEAVE read_loop;
-                    END IF;
-
-                    IF report_count >= 10 THEN
-                        IF report_status = 'benign' THEN
-                            IF NOT EXISTS (SELECT 1 FROM whitelisted_urls WHERE url = report_url) THEN
-                                INSERT INTO whitelisted_urls (url, status, threat_level) VALUES (report_url, 'benign', 'Low');
-                            ELSE
-                                UPDATE whitelisted_urls SET threat_level = 'Low' WHERE url = report_url;
-                            END IF;
-                            DELETE FROM virustotal_reports WHERE url = report_url AND status = report_status;
-                        ELSE -- phishing status
-                            IF NOT EXISTS (SELECT 1 FROM blacklisted_urls WHERE url = report_url) THEN
-                                INSERT INTO blacklisted_urls (url, status, threat_level) VALUES (report_url, 'phishing', 'Moderate');
-                            ELSE
-                                UPDATE blacklisted_urls SET threat_level = 'Moderate' WHERE url = report_url;
-                            END IF;
-                            DELETE FROM virustotal_reports WHERE url = report_url AND status = report_status;
+            DECLARE done INT DEFAULT FALSE;
+            DECLARE report_url VARCHAR(255);
+            DECLARE report_status VARCHAR(30);
+            DECLARE report_threat_level VARCHAR(30);
+            DECLARE report_count INT;
+            DECLARE cur CURSOR FOR 
+                SELECT url, status, threat_level, COUNT(*) as cnt
+                FROM virustotal_reports
+                GROUP BY url, status, threat_level
+                HAVING cnt >= 10;
+        
+            DECLARE CONTINUE HANDLER FOR NOT FOUND SET done = TRUE;
+        
+            OPEN cur;
+        
+            read_loop: LOOP
+                FETCH cur INTO report_url, report_status, report_threat_level, report_count;
+                IF done THEN
+                    LEAVE read_loop;
+                END IF;
+        
+                IF report_count >= 10 THEN
+                    IF report_status = 'benign' THEN
+                        IF NOT EXISTS (SELECT 1 FROM whitelisted_urls WHERE url = report_url) THEN
+                            INSERT INTO whitelisted_urls (url, status, threat_level) VALUES (report_url, 'benign', 'Low');
+                        ELSE
+                            UPDATE whitelisted_urls SET threat_level = 'Low' WHERE url = report_url;
                         END IF;
+                        DELETE FROM virustotal_reports WHERE url = report_url AND status = report_status;
+                    ELSE -- phishing or other malicious status
+                        IF NOT EXISTS (SELECT 1 FROM blacklisted_urls WHERE url = report_url) THEN
+                            INSERT INTO blacklisted_urls (url, status, threat_level) VALUES (report_url, report_status, report_threat_level);
+                        ELSE
+                            UPDATE blacklisted_urls SET status = report_status, threat_level = report_threat_level WHERE url = report_url;
+                        END IF;
+                        DELETE FROM virustotal_reports WHERE url = report_url AND status = report_status;
                     END IF;
-                END LOOP;
-
-                CLOSE cur;
-            END ;
+                END IF;
+            END LOOP;
+        
+            CLOSE cur;
+          END;
         `;
         db.query(createProcedure, (err, result) => {
             if (err) {
@@ -321,6 +322,24 @@ app.get('/check-blacklist', (req, res) => {
       return res.status(500).json({ error: 'Failed to check blacklist' });
     }
     res.json({ isBlacklisted: results.length > 0 });
+  });
+});
+
+// Endpoint to check threat_level for a URL in blacklisted_urls
+app.get('/check-threat-level', (req, res) => {
+  const { url } = req.query;
+
+  const query = 'SELECT threat_level FROM blacklisted_urls WHERE url = ?';
+  db.query(query, [url], (err, results) => {
+    if (err) {
+      console.error('Error checking threat level:', err);
+      return res.status(500).json({ error: 'Failed to check threat level' });
+    }
+    if (results.length > 0) {
+      res.json({ threatLevel: results[0].threat_level });
+    } else {
+      res.json({ threatLevel: 'URL not found in blacklist' });
+    }
   });
 });
 
