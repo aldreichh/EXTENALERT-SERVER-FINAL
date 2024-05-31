@@ -103,6 +103,21 @@ const connectToDatabase = () => {
       console.log('virustotal_reports table created or already exists:', result);
     });
 
+    const createUnratedReportsTable = `
+    CREATE TABLE IF NOT EXISTS unrated_reports (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      url VARCHAR(255),
+      status VARCHAR(30)
+    );
+    `;
+    db.query(createUnratedReportsTable, (err, result) => {
+      if (err) {
+        console.error('Error creating unrated_reports table:', err);
+        return;
+      }
+      console.log('unrated_reports table created or already exists:', result);
+    });
+
     // Drop existing procedure if it exists
     db.query('DROP PROCEDURE IF EXISTS process_incoming_reports', (err, result) => {
       if (err) {
@@ -248,6 +263,61 @@ const connectToDatabase = () => {
       });
     });
 
+    db.query('DROP PROCEDURE IF EXISTS delete_unrated_urls_if_exists', (err, result) => {
+      if (err) {
+          console.error('Error dropping existing procedure:', err);
+          return;
+      }
+  
+      // Create stored procedure
+      const createProcedure = `
+          CREATE PROCEDURE delete_unrated_urls_if_exists()
+          BEGIN
+              DECLARE url_to_delete VARCHAR(255);
+              DECLARE done INT DEFAULT FALSE;
+              DECLARE cur CURSOR FOR SELECT url FROM unrated_reports;
+              DECLARE CONTINUE HANDLER FOR NOT FOUND SET done = TRUE;
+              
+              OPEN cur;
+              
+              read_loop: LOOP
+                  FETCH cur INTO url_to_delete;
+                  IF done THEN
+                      LEAVE read_loop;
+                  END IF;
+                  
+                  -- Check if the URL exists in whitelisted_urls or blacklisted_urls
+                  IF EXISTS (SELECT 1 FROM whitelisted_urls WHERE url = url_to_delete) OR 
+                     EXISTS (SELECT 1 FROM blacklisted_urls WHERE url = url_to_delete) THEN
+                      DELETE FROM unrated_reports WHERE url = url_to_delete;
+                  END IF;
+              END LOOP;
+              
+              CLOSE cur;
+          END;
+      `;
+      db.query(createProcedure, (err, result) => {
+          if (err) {
+              console.error('Error creating procedure:', err);
+              return;
+          }
+          console.log('Procedure for deleting unrated URLs created successfully');
+      });
+      const createEvent = `
+        CREATE EVENT IF NOT EXISTS process_unrated_reports_event
+        ON SCHEDULE EVERY 10 SECOND
+        DO
+        CALL delete_unrated_urls_if_exists();
+      `;
+      db.query(createEvent, (err, result) => {
+        if (err) {
+            console.error('Error creating event:', err);
+            return;
+        }
+        console.log('Event created or already exists:', result);
+      });
+    });
+
     // Create event if it doesn't exist
     const createEvent = `
       CREATE EVENT IF NOT EXISTS process_incoming_reports_event
@@ -297,6 +367,22 @@ app.post('/add-data-virustotal', (req, res) => {
   });
 });
 
+// POST endpoint to add data to incoming_reports
+app.post('/add-data-unrated', (req, res) => {
+  const { url, status } = req.body;
+
+  const sql = 'INSERT INTO unrated_reports (url, status) VALUES (?, ?)';
+  db.query(sql, [url, status], (err, result) => {
+    if (err) {
+      console.error('Error adding data to unrated_reports:', err);
+      res.status(500).json({ error: 'Failed to add data to unrated_reports' });
+      return;
+    }
+    console.log('Data added to unrated_reports:', result);
+    res.status(200).json({ message: 'Data added successfully to unrated_reports' });
+  });
+});
+
 // Endpoint to check URL against whitelisted_reports
 app.get('/check-whitelist', (req, res) => {
   const { url } = req.query;
@@ -322,6 +408,20 @@ app.get('/check-blacklist', (req, res) => {
       return res.status(500).json({ error: 'Failed to check blacklist' });
     }
     res.json({ isBlacklisted: results.length > 0 });
+  });
+});
+
+// Endpoint to check URL against whitelisted_reports
+app.get('/check-unrated', (req, res) => {
+  const { url } = req.query;
+
+  const query = 'SELECT * FROM unrated_reports WHERE url = ?';
+  db.query(query, [url], (err, results) => {
+    if (err) {
+      console.error('Error checking unrated_reports:', err);
+      return res.status(500).json({ error: 'Failed to check unrated_reports' });
+    }
+    res.json({ isUnrated: results.length > 0 });
   });
 });
 
