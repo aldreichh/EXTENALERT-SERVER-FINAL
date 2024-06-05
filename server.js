@@ -500,6 +500,43 @@ app.get('/blacklisted-urls', (req, res) => {
   });
 });
 
+// Endpoint to retrieve all data from incoming_reports
+app.get('/incoming-reports', (req, res) => {
+  const query = 'SELECT * FROM incoming_reports';
+  db.query(query, (err, results) => {
+    if (err) {
+      console.error('Error fetching incoming reports:', err);
+      return res.status(500).json({ error: 'Failed to fetch incoming reports' });
+    }
+    res.json(results);
+  });
+});
+
+// Endpoint to retrieve all data from virustotal_reports
+app.get('/virustotal-reports', (req, res) => {
+  const query = 'SELECT * FROM virustotal_reports';
+  db.query(query, (err, results) => {
+    if (err) {
+      console.error('Error fetching virustoatl reports:', err);
+      return res.status(500).json({ error: 'Failed to fetch virustotal reports' });
+    }
+    res.json(results);
+  });
+});
+
+// Endpoint to retrieve all data from unrated_reports
+app.get('/unrated-reports', (req, res) => {
+  const query = 'SELECT * FROM unrated_reports';
+  db.query(query, (err, results) => {
+    if (err) {
+      console.error('Error fetching unrated reports:', err);
+      return res.status(500).json({ error: 'Failed to fetch unrated reports' });
+    }
+    res.json(results);
+  });
+});
+
+
 
 // Connect to the database
 connectToDatabase();
