@@ -118,6 +118,21 @@ const connectToDatabase = () => {
       console.log('unrated_reports table created or already exists:', result);
     });
 
+    const createUsersTable = `
+    CREATE TABLE users (
+      id INT PRIMARY KEY AUTO_INCREMENT,
+      username VARCHAR(255) NOT NULL,
+      password VARCHAR(255) NOT NULL
+    );
+    `;
+    db.query(createUsersTable, (err, result) => {
+      if (err) {
+        console.error('Error creating users table:', err);
+        return;
+      }
+      console.log('users table created or already exists:', result);
+    });
+
     // Drop existing procedure if it exists
     db.query('DROP PROCEDURE IF EXISTS process_incoming_reports', (err, result) => {
       if (err) {
@@ -442,6 +457,49 @@ app.get('/check-threat-level', (req, res) => {
     }
   });
 });
+
+// Endpoint to get data from users table
+app.post('/login', (req, res) => {
+  const { username, password } = req.body;
+
+  const query = 'SELECT * FROM users WHERE username = ? AND password = ?';
+  db.query(query, [username, password], (err, results) => {
+    if (err) {
+      console.error('Error fetching users:', err);
+      return res.status(500).json({ error: 'Failed to fetch users' });
+    }
+    if (results.length > 0) {
+      res.json({ success: true, user: results[0] });
+    } else {
+      res.json({ success: false, message: 'Invalid username or password' });
+    }
+  });
+});
+
+// Endpoint to retrieve all data from whitelisted_urls
+app.get('/whitelisted-urls', (req, res) => {
+  const query = 'SELECT * FROM whitelisted_urls';
+  db.query(query, (err, results) => {
+    if (err) {
+      console.error('Error fetching whitelisted URLs:', err);
+      return res.status(500).json({ error: 'Failed to fetch whitelisted URLs' });
+    }
+    res.json(results);
+  });
+});
+
+// Endpoint to retrieve all data from blacklisted_urls
+app.get('/blacklisted-urls', (req, res) => {
+  const query = 'SELECT * FROM blacklisted_urls';
+  db.query(query, (err, results) => {
+    if (err) {
+      console.error('Error fetching blacklisted URLs:', err);
+      return res.status(500).json({ error: 'Failed to fetch blacklisted URLs' });
+    }
+    res.json(results);
+  });
+});
+
 
 // Connect to the database
 connectToDatabase();
